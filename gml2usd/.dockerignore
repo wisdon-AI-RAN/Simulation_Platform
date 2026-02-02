@@ -1,0 +1,17 @@
+*.gml
+*.usd
+
+# Huge datasets / runtime artifacts (mounted as volumes)
+gml_original_file/
+processed_gmls/
+processed_usds/
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local envs
+.venv/
+env/
+local_pydeps/**/__pycache__/

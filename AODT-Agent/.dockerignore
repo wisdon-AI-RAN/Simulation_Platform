@@ -1,0 +1,52 @@
+# Python cache & compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Package build output
+build/
+dist/
+*.egg-info/
+
+# Git files
+.git
+.gitignore
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Logs & temp files
+*.log
+*.tmp
+*.swp
+
+# Unit test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Node.js dependencies (if frontend code exists)
+node_modules/
+*.tsbuildinfo
+
+# Docker-related
+Dockerfile*
+docker-compose*.yml
+
+# IDE/editor configs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Project-specific ignored dirs
+img/
+uploads/
+prometheus/tmp/

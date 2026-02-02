@@ -1,0 +1,42 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs / runtime artifacts
+*.log
+logs/
+*.pid
+
+# Local build/downloaded deps
+local_pydeps/
+
+# Generated data/artifacts (often large)
+gml2usd/gml_original_file/
+gml2usd/processed_gmls/
+gml2usd/processed_usds/
+gml2usd/uploads/
+gml2usd/logs/
+
+# Docker overrides
+**/docker-compose.override.yml

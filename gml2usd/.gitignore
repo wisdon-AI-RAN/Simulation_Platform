@@ -1,0 +1,11 @@
+*.gml
+gml_original_file/
+logs/
+__pycache__/
+gml_env/
+api_server.log 
+api_server.pid
+*.usd
+unicode.py 
+response.txt
+.env 
