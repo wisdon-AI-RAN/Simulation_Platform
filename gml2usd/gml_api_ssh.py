@@ -37,6 +37,17 @@ logger.addHandler(console_handler)
 
 app = Flask(__name__)
 
+
+def _parse_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text == "":
+        return default
+    return text in {"1", "true", "t", "yes", "y", "on"}
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """健康检查接口"""
@@ -72,6 +83,7 @@ def process_gml():
         gml_name = data.get('gml_name', default_gml_name)
         epsg_in = data.get('epsg_in', '3826')
         epsg_out = data.get('epsg_out', '32654')
+        disable_interiors = _parse_bool(data.get('disable_interiors', False), default=False)
 
         #設定local的usd位置
         usd_name = gml_name.split(".gml")[0] + ".usd"
@@ -81,7 +93,10 @@ def process_gml():
    
 
         # 记录请求信息
-        logger.info(f"收到处理请求: lat={lat}, lon={lon}, margin={margin}, gml_name={gml_name}")
+        logger.info(
+            f"收到处理请求: lat={lat}, lon={lon}, margin={margin}, gml_name={gml_name}, "
+            f"disable_interiors={disable_interiors}"
+        )
         
         # Step 1: generate GML locally (Main.py is interactive; we feed stdin)
         cmd = [
@@ -125,6 +140,7 @@ def process_gml():
                 epsg_in=str(epsg_in),
                 epsg_out=str(epsg_out),
                 rough=True,
+                disable_interiors=disable_interiors,
             )
         except ConversionError as conv_err:
             logger.error(f"USD 转换失败: {conv_err}")
@@ -203,6 +219,7 @@ def to_usd():
             }),400
         epsg_in = request.form['epsg_in']
         epsg_out = request.form.get('epsg_out', '32654')
+        disable_interiors = _parse_bool(request.form.get('disable_interiors', None), default=False)
         
         if 'project_id' not in request.form:
             return jsonify({
@@ -220,7 +237,10 @@ def to_usd():
         working_dir = os.path.dirname(working_file)
         default_usd_name = os.path.splitext(default_gml_name)[0] + '.usd'
         usd_path = os.path.join(working_dir,f"processed_usds/{default_usd_name}")
-        logger.info(f"start converting (local), gml_path: {gml_path} , usd_path: {usd_path}")
+        logger.info(
+            f"start converting (local), gml_path: {gml_path} , usd_path: {usd_path}, "
+            f"disable_interiors={disable_interiors}"
+        )
         try:
             convert_citygml_to_usd(
                 gml_path=gml_path,
@@ -228,6 +248,7 @@ def to_usd():
                 epsg_in=str(epsg_in),
                 epsg_out=str(epsg_out),
                 rough=True,
+                disable_interiors=disable_interiors,
             )
         except ConversionError as conv_err:
             logger.error(f"USD 转换失败: {conv_err}")
@@ -285,6 +306,13 @@ def process_obj():
         lon_str = request.form.get('lon')
         epsg_gml = request.form.get('epsg_gml', '3826') 
         epsg_usd = request.form.get('epsg_usd', '32654')
+        disable_interiors = _parse_bool(request.form.get('disable_interiors', None), default=False)
+        # Converter script inside /opt/aodt_ui_gis
+        # Default: indoor + groundplane + domain pipeline.
+        script_name = (
+            request.form.get('script_name', 'citygml2aodt_indoor_groundplane_domain.py')
+            or 'citygml2aodt_indoor_groundplane_domain.py'
+        ).strip()
         output_format = (request.form.get('output', 'usd') or 'usd').strip().lower()
         keep_files = (request.form.get('keep_files', '0') or '0').strip() == '1'
         
@@ -349,14 +377,18 @@ def process_obj():
                 return jsonify({"status": "error", "message": "GML file not generated"}), 500
         
         # 5. GML -> USD
-        logger.info(f"Converting GML to USD: {gml_path} -> {usd_path}")
+        logger.info(
+            f"Converting GML to USD: {gml_path} -> {usd_path} (script={script_name}, "
+            f"disable_interiors={disable_interiors})"
+        )
         convert_citygml_to_usd(
             gml_path=gml_path,
             usd_path=usd_path,
             epsg_in=epsg_gml,
             epsg_out=epsg_usd,
             rough=True,
-            script_name="citygml2aodt_indoor_groundplane_domain.py"
+            script_name=script_name,
+            disable_interiors=disable_interiors,
         )
 
         # 6. 回傳 USD

@@ -19,16 +19,18 @@
 - 複製並調整 [AODT-Agent/.env.example](AODT-Agent/.env.example) ➜ `AODT-Agent/.env`
 - 複製並調整 [gml2usd/.env.example](gml2usd/.env.example) ➜ `gml2usd/.env`
 
-2) 啟動（在 `AODT-Agent/` 目錄下執行）
+（可選）如需固定 Gateway 對外 Port：複製並調整 [.env.example](.env.example) ➜ `.env`
+
+2) 啟動（在專案根目錄 `Simulation_platform/` 執行）
 
 ```bash
-docker compose -f docker-compose.single-port.yml up -d --build
+docker compose up -d --build
 ```
 
 預設對外 Port：`8082`（可用環境變數改成你要的 Port）
 
 ```bash
-AODT_GATEWAY_PUBLIC_PORT=5000 docker compose -f docker-compose.single-port.yml up -d --build
+AODT_GATEWAY_PUBLIC_PORT=5000 docker compose up -d --build
 ```
 
 ## 只啟動 AODT-Agent（不含 gml2usd/gateway）
@@ -68,9 +70,12 @@ docker compose up -d --build
 	"margin": 50,
 	"gml_name": "map_aodt_0.gml",
 	"epsg_in": "3826",
-	"epsg_out": "32654"
+	"epsg_out": "32654",
+	"disable_interiors": false
 }
 ```
+
+`disable_interiors=true` 時，轉換指令會加上 `--disable_interiors`。
 
 `/to_usd` 必填欄位（form-data）：
 
@@ -79,10 +84,25 @@ docker compose up -d --build
 - `gml_file`
 - `epsg_out`（預設 `32654`）
 
+選填：
+
+- `disable_interiors`：`1/true/yes` 表示轉換指令加上 `--disable_interiors`
+
 `/process_obj` 必填欄位（form-data）：
 
 - `obj_file`
 - `lat`、`lon`（WGS84）
+
+選填：
+
+- `epsg_gml`（預設 `3826`）
+- `epsg_usd`（預設 `32654`）
+- `disable_interiors`：`1/true/yes` 表示轉換指令加上 `--disable_interiors`
+- `script_name`：指定容器內 `/opt/aodt_ui_gis/` 使用哪支轉換腳本（預設 `citygml2aodt_indoor_groundplane_domain.py`）
+- `output`：`usd`（預設）或 `gml`（只回傳中間產物 GML）
+- `keep_files`：`1` 表示保留暫存檔（預設會清除）
+
+> 注意：上傳檔案時 `curl` 需要用 `@`，例如 `-F obj_file=@./Askey.obj`，否則後端會收到字串而不是檔案。
 
 ## 資料夾與檔案輸出
 

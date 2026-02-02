@@ -108,9 +108,12 @@ Request body（JSON）：
   "margin": 50,
   "gml_name": "map_aodt_0.gml",
   "epsg_in": "3826",
-  "epsg_out": "32654"
+  "epsg_out": "32654",
+  "disable_interiors": false
 }
 ```
+
+`disable_interiors=true` 時，轉換指令會加上 `--disable_interiors`。
 
 ## Curl 範例
 
@@ -136,7 +139,7 @@ curl -sS "$BASE_URL/health"
 ```bash
 curl -sS -X POST "$BASE_URL/process_gml" \
   -H 'Content-Type: application/json' \
-  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654"}' \
+  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false}' \
   -o map_aodt_0.usd
 ```
 
@@ -147,6 +150,7 @@ curl -sS -X POST "$BASE_URL/to_usd" \
   -F project_id=0 \
   -F epsg_in=3826 \
   -F epsg_out=32654 \
+  -F disable_interiors=0 \
   -F gml_file=@./your.gml \
   -o map_aodt_0.usd
 ```
@@ -160,9 +164,13 @@ curl -sS -X POST "$BASE_URL/process_obj" \
   -F lon=120.40568 \
   -F epsg_gml=3826 \
   -F epsg_usd=32654 \
+  -F disable_interiors=0 \
+  -F script_name=citygml2aodt_indoor_groundplane_domain.py \
   -F obj_file=@./your.obj \
   -o obj_demo.usd
 ```
+
+> 注意：上傳檔案一定要用 `@`（例如 `-F obj_file=@./your.obj`），否則後端會回 `No obj_file part`。
 
 ### 列出已產生的 GML（`/list_files`）
 
@@ -180,6 +188,7 @@ multipart/form-data：
 - `epsg_in`（必填，常用 `3826`）
 - `gml_file`（必填）
 - `epsg_out`（選填，預設 `32654`）
+- `disable_interiors`（選填，`1/true/yes` 會加上 `--disable_interiors`）
 
 ### `POST /process_obj`
 
@@ -193,6 +202,8 @@ multipart/form-data：
 - `keep_files`（選填：`1` 保留暫存檔；預設會清掉）
 - `epsg_gml`（選填，預設 `3826`）
 - `epsg_usd`（選填，預設 `32654`）
+- `disable_interiors`（選填，`1/true/yes` 會加上 `--disable_interiors`）
+- `script_name`（選填，指定 `/opt/aodt_ui_gis/` 的轉換腳本；預設 `citygml2aodt_indoor_groundplane_domain.py`）
 
 ### `GET /list_files`
 

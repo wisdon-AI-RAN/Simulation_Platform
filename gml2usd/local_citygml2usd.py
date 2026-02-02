@@ -1,10 +1,14 @@
 import os
 import subprocess
 from typing import Tuple
+import logging
 
 
 class ConversionError(RuntimeError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 def convert_citygml_to_usd(
@@ -43,6 +47,8 @@ def convert_citygml_to_usd(
         cmd.append("--rough")
     if disable_interiors:
         cmd.append("--disable_interiors")
+
+    logger.info("Running converter: %s", " ".join(cmd))
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     stdout = proc.stdout or ""
