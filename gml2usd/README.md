@@ -127,31 +127,72 @@ Request body（JSON）：
 - 單一 Port gateway（推薦，預設）：`http://localhost:8082`
 - 只跑 gml2usd（直接打 service port）：`http://localhost:5001`
 
-以下以 `BASE_URL` 示範：
+
+## 使用範例
+
+這裡的目標是：
+
+- **統一輸出檔名**（不同流程都用同一個 `NAME`）
+- **OBJ 先驗證必要建築物名稱**（例如 `floor`、`roof`），避免轉出來才發現缺物件
+
+> 註：bundle（`.usd` + glTF 資產組）的回傳方式是 API 的預設行為；目前不提供一個顯式的 `output=bundle` 參數。
+
+
+### 基礎：OBJ ➜ bundle（統一檔名 + 必要物件驗證）
+#### 根據不同project可能會修改參數 : NAME , lat , lon 
 
 ```bash
+NAME=Askey
 BASE_URL=http://localhost:8082
+
+curl -f -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id="$NAME" \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F epsg_gml=3826 \
+  -F epsg_usd=32654 \
+  -F disable_interiors=1 \
+  -F script_name=citygml2aodt_indoor_groundplane_domain.py \
+  -F obj_file=@./"$NAME".obj \
+  -F output_basename="$NAME" \
+  -F required_objects=floor,roof \
+  -F skip_obj_validation=0 \
+  -o "$NAME".zip
 ```
 
-### 健康檢查
+### 基礎：經緯度 ➜ bundle（統一檔名）
+#### 根據不同project可能會修改參數 : NAME , lat , lon , margin
+
+```bash
+NAME=Askey
+BASE_URL=http://localhost:8082
+
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"'"$NAME"'","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","gml_name":"'"$NAME"'.gml"}' \
+  -o "$NAME".zip
+```
+
+### API狀態檢查
 
 ```bash
 curl -sS "$BASE_URL/health"
 ```
 
-### 用經緯度生成 USD（`/process_gml`）
+## 額外參考（進階用法）
+### 經緯度生成（`/process_gml`）
+基礎範例（bundle zip）：
 
 ```bash
 curl -f -sS -X POST "$BASE_URL/process_gml" \
   -H 'Content-Type: application/json' \
-  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false}' \
+  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"gml_name":"map_aodt_0.gml"}' \
   -o map_aodt_0_bundle.zip
 ```
-
-> 預設（不指定 `output`）會回傳 `zip`，內含：`.usd` + **glTF 檔案組**（通常是 `.gltf` + `.bin`，若有貼圖也會一起打包）。
+> （不指定 `output`）會回傳 `zip`，內含：`.usd` + **glTF 檔案組**（通常是 `.gltf` + `.bin`，若有貼圖也會一起打包）。
 > 為什麼不是直接回傳 `.gltf`？因為 `.gltf` 常常不是單一檔案（會依賴 `.bin/貼圖`），HTTP 回應一次只能回傳一個檔案，所以預設用 zip 包起來。
 
-如果你只想拿 USD（不產生 glTF）：
+額外：如果你只想拿 USD（不產生 glTF）：
 
 ```bash
 curl -f -sS -X POST "$BASE_URL/process_gml" \
@@ -160,23 +201,9 @@ curl -f -sS -X POST "$BASE_URL/process_gml" \
   -o map_aodt_0.usd
 ```
 
-如果你想在同一次請求中直接拿到 glTF：
+### 上傳 OBJ（`/process_obj`）
 
-```bash
-# 直接回傳單一檔案 GLB
-curl -f -sS -X POST "$BASE_URL/process_gml" \
-  -H 'Content-Type: application/json' \
-  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"output":"glb"}' \
-  -o map_aodt_0.glb
-
-# 回傳 zip（內含 .gltf + 可能的 .bin/貼圖等資產）
-curl -f -sS -X POST "$BASE_URL/process_gml" \
-  -H 'Content-Type: application/json' \
-  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"output":"gltf"}' \
-  -o map_aodt_0_gltf.zip
-```
-
-### 上傳 OBJ 轉 USD（`/process_obj`）
+基礎範例（bundle zip）：
 
 ```bash
 curl -f -sS -X POST "$BASE_URL/process_obj" \
@@ -197,31 +224,6 @@ curl -f -sS -X POST "$BASE_URL/process_obj" \
 > 檔名規則：zip 內檔案會預設以你上傳的 OBJ 檔名當 base name，例如上傳 `Askey.obj`，zip 內會是 `Askey.usd`、`Askey.gltf`、`Askey.bin`。
 > 如需覆蓋檔名，可加 `-F output_basename=MyName`。
 
-## 命名（統一檔名）
-
-如果你希望「不同流程」拿到的輸出檔名一致（例如都叫 `Askey.*`），可以用同一個 `NAME` 來控制：
-
-- `/process_obj`：用 `-F output_basename=NAME`（或不指定，讓它用上傳 OBJ 的檔名）
-- `/process_gml`：用 `{"gml_name":"NAME.gml"}`（zip/輸出會用同樣的 base name：`NAME.usd`、`NAME.gltf`、`NAME.bin`）
-
-範例（同一個 `NAME=Askey`）：
-
-```bash
-# OBJ → bundle（zip 內會是 Askey.usd / Askey.gltf / Askey.bin）
-curl -f -sS -X POST "$BASE_URL/process_obj" \
-  -F lat=22.82539 \
-  -F lon=120.40568 \
-  -F obj_file=@./Askey.obj \
-  -F output_basename=Askey \
-  -o Askey_bundle.zip
-
-# 經緯度 → bundle（zip 內會是 Askey.usd / Askey.gltf / Askey.bin）
-curl -f -sS -X POST "$BASE_URL/process_gml" \
-  -H 'Content-Type: application/json' \
-  -d '{"project_id":"Askey","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","gml_name":"Askey.gml"}' \
-  -o Askey_bundle.zip
-```
-
 如果你只想拿 USD（不產生 glTF）：
 
 ```bash
@@ -234,29 +236,7 @@ curl -f -sS -X POST "$BASE_URL/process_obj" \
   -o obj_demo.usd
 ```
 
-如果你想在同一次請求中直接拿到 glTF：
-
-```bash
-# 直接回傳單一檔案 GLB
-curl -f -sS -X POST "$BASE_URL/process_obj" \
-  -F project_id=obj_demo \
-  -F lat=22.82539 \
-  -F lon=120.40568 \
-  -F obj_file=@./your.obj \
-  -F output=glb \
-  -o obj_demo.glb
-
-# 回傳 zip（內含 .gltf + 可能的 .bin/貼圖等資產）
-curl -f -sS -X POST "$BASE_URL/process_obj" \
-  -F project_id=obj_demo \
-  -F lat=22.82539 \
-  -F lon=120.40568 \
-  -F obj_file=@./your.obj \
-  -F output=gltf \
-  -o obj_demo_gltf.zip
-```
-
-如果你要在轉換前先驗證 OBJ 內容（例如必須包含 `floor` 與 `roof` 兩個 object/group 名稱），可加：
+額外：如果你要在轉換前先驗證 OBJ 內容（例如必須包含 `floor` 與 `roof` 兩個 object/group 名稱），可加：
 
 ```bash
 curl -sS -X POST "$BASE_URL/process_obj" \
@@ -292,7 +272,7 @@ curl -sS -X POST "$BASE_URL/process_obj" \
 curl -sS "$BASE_URL/list_files"
 ```
 
-### `POST /process_obj`
+### `POST /process_obj` API 內容格式
 
 上傳 OBJ 檔案，會先轉成 GML 再轉 USD。
 
