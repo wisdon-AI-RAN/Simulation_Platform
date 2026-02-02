@@ -40,6 +40,7 @@ RUN chmod 777 processed_usds
 COPY gml_api_ssh.py /app/
 COPY local_citygml2usd.py /app/
 COPY obj_converter.py /app/
+COPY usd_to_gltf.py /app/
 COPY gml_bounding_boxes_v1.csv /app/
 COPY Main.py /app/
 COPY excluded_buildings.txt /app/

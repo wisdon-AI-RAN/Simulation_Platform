@@ -10,7 +10,6 @@ gml2usd 提供兩種常用轉換流程：
   - 先呼叫 [Main.py](Main.py)（互動式腳本，但 API 會用 stdin 自動餵參數）在 `processed_gmls/` 產生 GML。
   - 再呼叫 [local_citygml2usd.py](local_citygml2usd.py) 透過 `/opt/aodt_ui_gis/` 的轉換腳本把 GML 轉成 USD。
 - **上傳檔案 ➜ USD**：
-  - `POST /to_usd`：上傳 CityGML（GML）檔案轉 USD。
   - `POST /process_obj`：上傳 OBJ，先用 [obj_converter.py](obj_converter.py) 轉成 GML，再轉 USD。
 
 實際 API 入口在 [gml_api_ssh.py](gml_api_ssh.py)，容器內用 gunicorn 啟動（見 [Dockerfile](Dockerfile)）。
@@ -32,7 +31,7 @@ gml2usd 提供兩種常用轉換流程：
 docker compose -f docker-compose.single-port.yml up -d --build
 ```
 
-Gateway 會提供：`/health`、`/process_gml`、`/to_usd`、`/process_obj`、`/list_files`。
+Gateway 會提供：`/health`、`/process_gml`、`/process_obj`、`/list_files`。
 
 ## 只部署 gml2usd（不含 gateway）
 
@@ -96,7 +95,10 @@ rsync -av --progress alvin@ov6000:/home/alvin/Auto_transport/gml_origin_file/ ./
 
 ### `POST /process_gml`
 
-輸入經緯度與範圍，先用 [Main.py](Main.py) 生成 GML，接著轉 USD 並回傳 USD binary。
+輸入經緯度與範圍，先用 [Main.py](Main.py) 生成 GML，接著轉 USD。
+
+> 預設（不指定 `output`）會回傳 `zip bundle`：`.usd` + glTF 資產組（通常是 `.gltf` + `.bin`；若有貼圖也會一起打包）。
+> 若指定 `"output":"usd"`，則只回傳 `.usd`。
 
 Request body（JSON）：
 
@@ -109,11 +111,14 @@ Request body（JSON）：
   "gml_name": "map_aodt_0.gml",
   "epsg_in": "3826",
   "epsg_out": "32654",
-  "disable_interiors": false
+  "disable_interiors": false,
+  "keep_files": false
 }
 ```
 
 `disable_interiors=true` 時，轉換指令會加上 `--disable_interiors`。
+
+`keep_files=true` 時，服務端會保留 `processed_gmls/*.gml` 與 `processed_usds/*.usd`（方便你之後用 `GET /list_files` 檢查或到 volume 目錄查看）。
 
 ## Curl 範例
 
@@ -137,28 +142,44 @@ curl -sS "$BASE_URL/health"
 ### 用經緯度生成 USD（`/process_gml`）
 
 ```bash
-curl -sS -X POST "$BASE_URL/process_gml" \
+curl -f -sS -X POST "$BASE_URL/process_gml" \
   -H 'Content-Type: application/json' \
   -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false}' \
+  -o map_aodt_0_bundle.zip
+```
+
+> 預設（不指定 `output`）會回傳 `zip`，內含：`.usd` + **glTF 檔案組**（通常是 `.gltf` + `.bin`，若有貼圖也會一起打包）。
+> 為什麼不是直接回傳 `.gltf`？因為 `.gltf` 常常不是單一檔案（會依賴 `.bin/貼圖`），HTTP 回應一次只能回傳一個檔案，所以預設用 zip 包起來。
+
+如果你只想拿 USD（不產生 glTF）：
+
+```bash
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"output":"usd"}' \
   -o map_aodt_0.usd
 ```
 
-### 上傳 GML 轉 USD（`/to_usd`）
+如果你想在同一次請求中直接拿到 glTF：
 
 ```bash
-curl -sS -X POST "$BASE_URL/to_usd" \
-  -F project_id=0 \
-  -F epsg_in=3826 \
-  -F epsg_out=32654 \
-  -F disable_interiors=0 \
-  -F gml_file=@./your.gml \
-  -o map_aodt_0.usd
+# 直接回傳單一檔案 GLB
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"output":"glb"}' \
+  -o map_aodt_0.glb
+
+# 回傳 zip（內含 .gltf + 可能的 .bin/貼圖等資產）
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"0","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"output":"gltf"}' \
+  -o map_aodt_0_gltf.zip
 ```
 
 ### 上傳 OBJ 轉 USD（`/process_obj`）
 
 ```bash
-curl -sS -X POST "$BASE_URL/process_obj" \
+curl -f -sS -X POST "$BASE_URL/process_obj" \
   -F project_id=obj_demo \
   -F lat=22.82539 \
   -F lon=120.40568 \
@@ -167,7 +188,72 @@ curl -sS -X POST "$BASE_URL/process_obj" \
   -F disable_interiors=0 \
   -F script_name=citygml2aodt_indoor_groundplane_domain.py \
   -F obj_file=@./your.obj \
+  -o obj_demo_bundle.zip
+```
+
+> 預設（不指定 `output`）會回傳 `zip`，內含：`.usd` + **glTF 檔案組**（通常是 `.gltf` + `.bin`，若有貼圖也會一起打包）。
+> 如果你想要「單一檔案」比較好存取/下載，請用 `output=glb`。
+
+> 檔名規則：zip 內檔案會預設以你上傳的 OBJ 檔名當 base name，例如上傳 `Askey.obj`，zip 內會是 `Askey.usd`、`Askey.gltf`、`Askey.bin`。
+> 如需覆蓋檔名，可加 `-F output_basename=MyName`。
+
+## 命名（統一檔名）
+
+如果你希望「不同流程」拿到的輸出檔名一致（例如都叫 `Askey.*`），可以用同一個 `NAME` 來控制：
+
+- `/process_obj`：用 `-F output_basename=NAME`（或不指定，讓它用上傳 OBJ 的檔名）
+- `/process_gml`：用 `{"gml_name":"NAME.gml"}`（zip/輸出會用同樣的 base name：`NAME.usd`、`NAME.gltf`、`NAME.bin`）
+
+範例（同一個 `NAME=Askey`）：
+
+```bash
+# OBJ → bundle（zip 內會是 Askey.usd / Askey.gltf / Askey.bin）
+curl -f -sS -X POST "$BASE_URL/process_obj" \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F obj_file=@./Askey.obj \
+  -F output_basename=Askey \
+  -o Askey_bundle.zip
+
+# 經緯度 → bundle（zip 內會是 Askey.usd / Askey.gltf / Askey.bin）
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"Askey","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","gml_name":"Askey.gml"}' \
+  -o Askey_bundle.zip
+```
+
+如果你只想拿 USD（不產生 glTF）：
+
+```bash
+curl -f -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id=obj_demo \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F obj_file=@./your.obj \
+  -F output=usd \
   -o obj_demo.usd
+```
+
+如果你想在同一次請求中直接拿到 glTF：
+
+```bash
+# 直接回傳單一檔案 GLB
+curl -f -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id=obj_demo \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F obj_file=@./your.obj \
+  -F output=glb \
+  -o obj_demo.glb
+
+# 回傳 zip（內含 .gltf + 可能的 .bin/貼圖等資產）
+curl -f -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id=obj_demo \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F obj_file=@./your.obj \
+  -F output=gltf \
+  -o obj_demo_gltf.zip
 ```
 
 如果你要在轉換前先驗證 OBJ 內容（例如必須包含 `floor` 與 `roof` 兩個 object/group 名稱），可加：
@@ -206,27 +292,22 @@ curl -sS -X POST "$BASE_URL/process_obj" \
 curl -sS "$BASE_URL/list_files"
 ```
 
-### `POST /to_usd`
-
-上傳 GML 檔案轉 USD（回傳 USD binary）。
-
-multipart/form-data：
-
-- `project_id`（必填）
-- `epsg_in`（必填，常用 `3826`）
-- `gml_file`（必填）
-- `epsg_out`（選填，預設 `32654`）
-- `disable_interiors`（選填，`1/true/yes` 會加上 `--disable_interiors`）
-
 ### `POST /process_obj`
 
-上傳 OBJ 檔案，會先轉成 GML 再轉 USD（預設回傳 USD；也可回傳中間 GML）。
+上傳 OBJ 檔案，會先轉成 GML 再轉 USD。
+
+> 預設（不指定 `output`）會回傳 `zip bundle`：`.usd` + glTF 資產組。
 
 multipart/form-data：
 
 - `obj_file`（必填）
 - `lat`、`lon`（必填，WGS84，作為模型原點）
-- `output`（選填：`usd` 或 `gml`，預設 `usd`）
+- `output`（選填：`usd` / `gml` / `glb` / `gltf`）
+  - 不指定（預設）：回傳 bundle zip（`.usd` + glTF 資產組）
+  - `usd`：只回傳 `.usd`
+  - `gml`：只回傳中間產物 `.gml`
+  - `gltf`：回傳 glTF zip（`.gltf` + `.bin`，若有貼圖也會一起打包）
+  - `glb`：回傳單一 `.glb`
 - `keep_files`（選填：`1` 保留暫存檔；預設會清掉）
 - `epsg_gml`（選填，預設 `3826`）
 - `epsg_usd`（選填，預設 `32654`）

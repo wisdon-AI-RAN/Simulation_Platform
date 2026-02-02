@@ -5,10 +5,10 @@
 ## 架構概覽
 
 - **AODT-Agent**：提供 `/restart`（透過 SSH 去遠端主機執行啟動腳本）與 `/test`。
-- **gml2usd**：提供 CityGML/OBJ 轉 USD 的 API（回傳 USD binary）。
+- **gml2usd**：提供 CityGML/OBJ ➜ USD 的 API，並可輸出 glTF（預設回傳 bundle zip：`.usd` + glTF 資產組）。
 - **Gateway（可選）**：Nginx 以「單一對外 Port」做路徑轉發。
 	- `/restart`、`/test` ➜ AODT-Agent
-	- `/health`、`/process_gml`、`/to_usd`、`/process_obj`、`/list_files` ➜ gml2usd
+	- `/health`、`/process_gml`、`/process_obj`、`/list_files` ➜ gml2usd
 
 ## 快速啟動（建議：單一 Port 模式）
 
@@ -54,71 +54,13 @@ docker compose up -d --build
 
 ### gml2usd
 
-- `GET /health`：健康檢查
-- `POST /process_gml`：輸入經緯度範圍生成 GML，並轉 USD（回傳 USD binary）
-- `POST /to_usd`：上傳 GML（multipart/form-data）轉 USD（回傳 USD binary）
-- `POST /process_obj`：上傳 OBJ（multipart/form-data）➜（中間產 GML）➜ USD
-- `GET /list_files`：列出 `processed_gmls/` 的 `.gml`
-
-`/process_gml` 範例（JSON）：
-
-```json
-{
-	"project_id": "0",
-	"lat": 22.82539,
-	"lon": 120.40568,
-	"margin": 50,
-	"gml_name": "map_aodt_0.gml",
-	"epsg_in": "3826",
-	"epsg_out": "32654",
-	"disable_interiors": false
-}
-```
-
-`disable_interiors=true` 時，轉換指令會加上 `--disable_interiors`。
-
-`/to_usd` 必填欄位（form-data）：
-
-- `project_id`
-- `epsg_in`（常用 `3826`）
-- `gml_file`
-- `epsg_out`（預設 `32654`）
-
-選填：
-
-- `disable_interiors`：`1/true/yes` 表示轉換指令加上 `--disable_interiors`
-
-`/process_obj` 必填欄位（form-data）：
-
-- `obj_file`
-- `lat`、`lon`（WGS84）
-
-選填：
-
-- `epsg_gml`（預設 `3826`）
-- `epsg_usd`（預設 `32654`）
-- `disable_interiors`：`1/true/yes` 表示轉換指令加上 `--disable_interiors`
-- `script_name`：指定容器內 `/opt/aodt_ui_gis/` 使用哪支轉換腳本（預設 `citygml2aodt_indoor_groundplane_domain.py`）
-- `output`：`usd`（預設）或 `gml`（只回傳中間產物 GML）
-- `keep_files`：`1` 表示保留暫存檔（預設會清除）
-- `required_objects`：逗號分隔（例如 `floor,roof`），用來在轉換前驗證 OBJ 必須包含這些 object/group 名稱
-- `required_object`：可重複多次（效果同 `required_objects`）
-- `skip_obj_validation`：`1/true/yes` 會跳過 OBJ 名稱檢查
-
-> 預設情況下（不指定 `required_objects`/`required_object` 且不設 `skip_obj_validation`），服務會要求 OBJ 內必須存在 `floor` 與 `roof`。
-> 這通常來自 OBJ 中的物件/群組宣告行：`o floor`、`o roof`（或 `g floor`、`g roof`）。
-
-> 注意：上傳檔案時 `curl` 需要用 `@`，例如 `-F obj_file=@./Askey.obj`，否則後端會收到字串而不是檔案。
-
-> 建議：呼叫 `curl` 時加 `-f` 或印出 HTTP code。
-> - 沒加 `-f` 時，即使後端回 `400`，`curl` 仍可能 exit code 0，且你若用 `-o xxx.usd` 會把錯誤 JSON 存成 `.usd`。
-> - 建議用：`curl -f -sS ... -o out.usd` 或 `curl -sS -w 'http=%{http_code}\n' -o out.usd ...`
+gml2usd 的 API/參數與 curl 範例請看 [gml2usd/README.md](gml2usd/README.md)。
 
 ## 資料夾與檔案輸出
 
 - [gml2usd/gml_original_file](gml2usd/gml_original_file)：原始 CityGML 資料（非常大，建議用 volume mount）
 - [gml2usd/processed_gmls](gml2usd/processed_gmls)：中間產物/輸出 GML
-- [gml2usd/processed_usds](gml2usd/processed_usds)：輸出 USD（API 回傳後會依設定刪除暫存檔）
+- [gml2usd/processed_usds](gml2usd/processed_usds)：輸出 USD（API 回傳後依 `keep_files` 決定是否保留）
 - [gml2usd/uploads](gml2usd/uploads)：上傳 OBJ 的暫存
 - [gml2usd/logs](gml2usd/logs)：gml2usd API log
 

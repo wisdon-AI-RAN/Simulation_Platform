@@ -12,7 +12,22 @@ import traceback
 import sys
 from local_citygml2usd import convert_citygml_to_usd, ConversionError
 from obj_converter import OBJToGMLConverter, validate_obj_required_objects, OBJValidationError
+from usd_to_gltf import usd_to_glb, usd_to_gltf_zip, usd_to_gltf_dir
 import requests
+import re
+
+
+def _zip_files(zip_path: str, files: list[tuple[str, str]]) -> None:
+    """Create a zip that contains a set of files.
+
+    files: list of (arcname, filepath)
+    """
+    import zipfile
+
+    os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for arcname, filepath in files:
+            zf.write(filepath, arcname=arcname)
 
 # 创建日志目录
 os.makedirs('logs', exist_ok=True)
@@ -36,6 +51,19 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 app = Flask(__name__)
+
+
+def _safe_base_name(filename: str | None, *, default: str = "output") -> str:
+    """Derive a filesystem/zip-safe base name (no extension)."""
+    if not filename:
+        return default
+    base = os.path.splitext(os.path.basename(str(filename)))[0].strip()
+    if not base:
+        return default
+    # Keep simple, portable characters.
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    base = base.strip("._-")
+    return base or default
 
 
 def _parse_bool(value, default: bool = False) -> bool:
@@ -84,6 +112,13 @@ def process_gml():
         epsg_in = data.get('epsg_in', '3826')
         epsg_out = data.get('epsg_out', '32654')
         disable_interiors = _parse_bool(data.get('disable_interiors', False), default=False)
+        keep_files = _parse_bool(data.get('keep_files', False), default=False)
+        output_raw = data.get('output', None)
+        output_format = (str(output_raw).strip().lower() if output_raw is not None else '')
+
+        # Ensure output directories exist (host volume mounts may not be present on a fresh machine)
+        os.makedirs(os.path.join("processed_gmls"), exist_ok=True)
+        os.makedirs(os.path.join("processed_usds"), exist_ok=True)
 
         #設定local的usd位置
         usd_name = gml_name.split(".gml")[0] + ".usd"
@@ -95,7 +130,7 @@ def process_gml():
         # 记录请求信息
         logger.info(
             f"收到处理请求: lat={lat}, lon={lon}, margin={margin}, gml_name={gml_name}, "
-            f"disable_interiors={disable_interiors}"
+            f"disable_interiors={disable_interiors}, keep_files={keep_files}"
         )
         
         # Step 1: generate GML locally (Main.py is interactive; we feed stdin)
@@ -116,6 +151,7 @@ def process_gml():
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            cwd=working_dir,
         )
         
         # 读取输出
@@ -130,6 +166,28 @@ def process_gml():
                 "status": "error",
                 "message": f"process fail: {stderr}",
                 "details": stdout
+            }), 500
+
+        # Verify GML was actually generated before converting to USD.
+        gml_path = os.path.join(working_dir, "processed_gmls", gml_name)
+        if not os.path.exists(gml_path):
+            logger.error(
+                "Main.py completed but expected GML file is missing: %s; stdout=%s; stderr=%s",
+                gml_path,
+                stdout[-2000:],
+                stderr[-2000:],
+            )
+            try:
+                existing = os.listdir(os.path.join(working_dir, "processed_gmls"))
+            except Exception:
+                existing = []
+            return jsonify({
+                "status": "error",
+                "message": "GML generation failed (file not created)",
+                "expected_gml": os.path.join("processed_gmls", gml_name),
+                "processed_gmls_listing": existing,
+                "stdout_tail": stdout[-2000:],
+                "stderr_tail": stderr[-2000:],
             }), 500
 
         # Step 2: convert GML -> USD locally in this container
@@ -148,6 +206,7 @@ def process_gml():
                 "status": "error",
                 "message": "USD conversion failed",
                 "details": str(conv_err),
+                "expected_gml": os.path.join("processed_gmls", gml_name),
             }), 500
         
         
@@ -177,14 +236,79 @@ def process_gml():
         else:
             logger.info(f"GML文件已成功生成: {gml_path}, 大小: {file_size}字节")
 
-        #return files and delete the files
+        # Return files and delete the files
+        # Default: if output is not specified, return a bundle zip (USD + glTF assets)
+        if output_format == '':
+            bundle_dir = os.path.join(working_dir, "processed_bundles")
+            os.makedirs(bundle_dir, exist_ok=True)
+
+            tmp_gltf_dir = os.path.join(bundle_dir, os.path.splitext(usd_name)[0] + "_gltf")
+            generated = usd_to_gltf_dir(usd_path, tmp_gltf_dir, base_name=os.path.splitext(usd_name)[0])
+
+            bundle_zip_path = os.path.join(bundle_dir, os.path.splitext(usd_name)[0] + "_bundle.zip")
+            files = [(os.path.basename(usd_path), usd_path)]
+            for f in generated:
+                files.append((os.path.basename(f), f))
+            _zip_files(bundle_zip_path, files)
+
+            return_data = io.BytesIO()
+            with open(bundle_zip_path, 'rb') as fo:
+                return_data.write(fo.read())
+            return_data.seek(0)
+
+            os.remove(bundle_zip_path)
+            for f in generated:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+            try:
+                os.rmdir(tmp_gltf_dir)
+            except Exception:
+                pass
+            if not keep_files:
+                os.remove(usd_path)
+                os.remove(gml_path)
+            return send_file(return_data, mimetype='application/zip', download_name=os.path.basename(bundle_zip_path))
+
+        if output_format in {'glb', 'gltf'}:
+            gltf_out_dir = os.path.join(working_dir, "processed_gltfs")
+            os.makedirs(gltf_out_dir, exist_ok=True)
+
+            if output_format == 'glb':
+                glb_path = os.path.join(gltf_out_dir, os.path.splitext(usd_name)[0] + ".glb")
+                usd_to_glb(usd_path, glb_path)
+                return_data = io.BytesIO()
+                with open(glb_path, 'rb') as fo:
+                    return_data.write(fo.read())
+                return_data.seek(0)
+                os.remove(glb_path)
+                if not keep_files:
+                    os.remove(usd_path)
+                    os.remove(gml_path)
+                return send_file(return_data, mimetype='model/gltf-binary', download_name=os.path.basename(glb_path))
+
+            zip_path = os.path.join(gltf_out_dir, os.path.splitext(usd_name)[0] + "_gltf.zip")
+            usd_to_gltf_zip(usd_path, zip_path, base_name=os.path.splitext(usd_name)[0])
+            return_data = io.BytesIO()
+            with open(zip_path, 'rb') as fo:
+                return_data.write(fo.read())
+            return_data.seek(0)
+            os.remove(zip_path)
+            if not keep_files:
+                os.remove(usd_path)
+                os.remove(gml_path)
+            return send_file(return_data, mimetype='application/zip', download_name=os.path.basename(zip_path))
+
+        # Default / explicit USD output
         return_data = io.BytesIO()
         with open(usd_path,'rb') as fo:
             return_data.write(fo.read())
         return_data.seek(0)
-        os.remove(usd_path)
-        os.remove(gml_path)
-        return send_file(return_data,mimetype='application/octet-stream')
+        if not keep_files:
+            os.remove(usd_path)
+            os.remove(gml_path)
+        return send_file(return_data, mimetype='application/octet-stream')
     
     except Exception as e:
         # 记录异常堆栈
@@ -196,85 +320,6 @@ def process_gml():
             "stack_trace": error_trace
         }), 500
     
-@app.route('/to_usd',methods=['POST'])
-def to_usd():
-    """給gml處理成usd"""
-    logger.info("receive request")
-    try:
-        if 'epsg_in' not in request.form:
-            return jsonify({
-                "status": "error",
-                "message": "no epsg_in"
-            }), 400
-        if 'gml_file' not in request.files:
-            return jsonify({
-                "status": "error",
-                "message": "no gml"
-            }), 400
-        gml_file = request.files['gml_file']
-        if gml_file.filename == '':
-            return jsonify({
-                "status": "error",
-                "message": "empty file"
-            }),400
-        epsg_in = request.form['epsg_in']
-        epsg_out = request.form.get('epsg_out', '32654')
-        disable_interiors = _parse_bool(request.form.get('disable_interiors', None), default=False)
-        
-        if 'project_id' not in request.form:
-            return jsonify({
-                "status": "error",
-                "message": "no project_id"
-            }),400
-        project_id = request.form['project_id']
-        #定gml_path
-        default_gml_name = f"map_aodt_{project_id}.gml"
-        gml_path = os.path.join("processed_gmls",default_gml_name)
-
-        gml_file.save(gml_path)
-        #定usd_path
-        working_file = os.path.abspath(__file__)
-        working_dir = os.path.dirname(working_file)
-        default_usd_name = os.path.splitext(default_gml_name)[0] + '.usd'
-        usd_path = os.path.join(working_dir,f"processed_usds/{default_usd_name}")
-        logger.info(
-            f"start converting (local), gml_path: {gml_path} , usd_path: {usd_path}, "
-            f"disable_interiors={disable_interiors}"
-        )
-        try:
-            convert_citygml_to_usd(
-                gml_path=gml_path,
-                usd_path=usd_path,
-                epsg_in=str(epsg_in),
-                epsg_out=str(epsg_out),
-                rough=True,
-                disable_interiors=disable_interiors,
-            )
-        except ConversionError as conv_err:
-            logger.error(f"USD 转换失败: {conv_err}")
-            return jsonify({
-                "status": "error",
-                "message": "USD conversion failed",
-                "details": str(conv_err),
-            }), 500
-
-        return_data = io.BytesIO()
-        with open(usd_path,'rb') as fo:
-            return_data.write(fo.read())
-        return_data.seek(0)
-        os.remove(usd_path)
-        os.remove(gml_path)
-        return send_file(return_data,mimetype='application/octet-stream')
-
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        logger.error(f"处理请求时发生错误: {str(e)}\n{error_trace}")
-        return jsonify({
-            "status": "error",
-            "message": f"内部服务器错误: {str(e)}",
-            "stack_trace": error_trace
-        }), 500
-
 @app.route('/process_obj', methods=['POST'])
 def process_obj():
     """OBJ处理接口 - 接收OBJ並轉換為USD (經由GML)
@@ -314,8 +359,15 @@ def process_obj():
             request.form.get('script_name', 'citygml2aodt_indoor_groundplane_domain.py')
             or 'citygml2aodt_indoor_groundplane_domain.py'
         ).strip()
-        output_format = (request.form.get('output', 'usd') or 'usd').strip().lower()
+        output_raw = request.form.get('output')
+        output_format = (output_raw.strip().lower() if isinstance(output_raw, str) else '')
         keep_files = (request.form.get('keep_files', '0') or '0').strip() == '1'
+
+        # Naming for responses: default to uploaded OBJ stem (e.g. Askey.obj -> Askey.*)
+        # You can override with output_basename=form field.
+        response_base = _safe_base_name(request.form.get('output_basename'), default="")
+        if not response_base:
+            response_base = _safe_base_name(file.filename, default=_safe_base_name(project_id, default="output"))
 
         # Optional validation: ensure OBJ contains specific object/group names.
         # - required_objects: comma-separated list, e.g. "floor,roof"
@@ -340,9 +392,11 @@ def process_obj():
         working_file = os.path.abspath(__file__)
         working_dir = os.path.dirname(working_file)
         
-        obj_filename = f"{project_id}.obj"
-        gml_filename = f"map_aodt_{project_id}.gml"
-        usd_filename = f"map_aodt_{project_id}.usd"
+        # Keep temp filenames unique-ish to reduce collisions across concurrent requests.
+        tmp_suffix = f"{project_id}_{int(time.time())}"
+        obj_filename = f"{tmp_suffix}.obj"
+        gml_filename = f"map_aodt_{tmp_suffix}.gml"
+        usd_filename = f"map_aodt_{tmp_suffix}.usd"
         
         # 暫存 obj
         upload_dir = os.path.join(working_dir, "uploads")
@@ -406,7 +460,7 @@ def process_obj():
                 return send_file(
                     return_data,
                     mimetype='application/xml',
-                    download_name=gml_filename,
+                    download_name=f"{response_base}.gml",
                 )
             else:
                 return jsonify({"status": "error", "message": "GML file not generated"}), 500
@@ -429,6 +483,84 @@ def process_obj():
         # 6. 回傳 USD
         return_data = io.BytesIO()
         if os.path.exists(usd_path):
+            # Default: if output is not specified, return a bundle zip (USD + glTF assets)
+            if output_format == '':
+                bundle_dir = os.path.join(working_dir, "processed_bundles")
+                os.makedirs(bundle_dir, exist_ok=True)
+
+                tmp_gltf_dir = os.path.join(bundle_dir, f"{response_base}_gltf_{int(time.time())}")
+                generated = usd_to_gltf_dir(usd_path, tmp_gltf_dir, base_name=response_base)
+
+                bundle_zip_path = os.path.join(bundle_dir, f"{response_base}_bundle_{int(time.time())}.zip")
+                files = [(f"{response_base}.usd", usd_path)]
+                for f in generated:
+                    files.append((os.path.basename(f), f))
+                _zip_files(bundle_zip_path, files)
+
+                with open(bundle_zip_path, 'rb') as fo:
+                    return_data.write(fo.read())
+                return_data.seek(0)
+
+                if not keep_files:
+                    try:
+                        os.remove(obj_path)
+                        os.remove(gml_path)
+                        os.remove(usd_path)
+                        for f in generated:
+                            try:
+                                os.remove(f)
+                            except Exception:
+                                pass
+                        try:
+                            os.rmdir(tmp_gltf_dir)
+                        except Exception:
+                            pass
+                        os.remove(bundle_zip_path)
+                    except Exception as e:
+                        logger.warning(f"Cleanup failed: {e}")
+
+                return send_file(return_data, mimetype='application/zip', download_name=f"{response_base}.zip")
+
+            # Optional: USD -> GLB / glTF
+            if output_format in {'glb', 'gltf'}:
+                gltf_out_dir = os.path.join(working_dir, "processed_gltfs")
+                os.makedirs(gltf_out_dir, exist_ok=True)
+
+                if output_format == 'glb':
+                    glb_path = os.path.join(gltf_out_dir, f"{response_base}_{int(time.time())}.glb")
+                    usd_to_glb(usd_path, glb_path)
+                    with open(glb_path, 'rb') as fo:
+                        return_data.write(fo.read())
+                    return_data.seek(0)
+
+                    if not keep_files:
+                        try:
+                            os.remove(obj_path)
+                            os.remove(gml_path)
+                            os.remove(usd_path)
+                            os.remove(glb_path)
+                        except Exception as e:
+                            logger.warning(f"Cleanup failed: {e}")
+
+                    return send_file(return_data, mimetype='model/gltf-binary', download_name=f"{response_base}.glb")
+
+                zip_path = os.path.join(gltf_out_dir, f"{response_base}_gltf_{int(time.time())}.zip")
+                usd_to_gltf_zip(usd_path, zip_path, base_name=response_base)
+                with open(zip_path, 'rb') as fo:
+                    return_data.write(fo.read())
+                return_data.seek(0)
+
+                if not keep_files:
+                    try:
+                        os.remove(obj_path)
+                        os.remove(gml_path)
+                        os.remove(usd_path)
+                        os.remove(zip_path)
+                    except Exception as e:
+                        logger.warning(f"Cleanup failed: {e}")
+
+                return send_file(return_data, mimetype='application/zip', download_name=f"{response_base}.zip")
+
             with open(usd_path,'rb') as fo:
                 return_data.write(fo.read())
             return_data.seek(0)
@@ -442,7 +574,7 @@ def process_obj():
                 except Exception as e:
                     logger.warning(f"Cleanup failed: {e}")
 
-            return send_file(return_data, mimetype='application/octet-stream', download_name=usd_filename)
+            return send_file(return_data, mimetype='application/octet-stream', download_name=f"{response_base}.usd")
         else:
              return jsonify({"status": "error", "message": "USD file not generated"}), 500
 
