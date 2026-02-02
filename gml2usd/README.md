@@ -170,7 +170,35 @@ curl -sS -X POST "$BASE_URL/process_obj" \
   -o obj_demo.usd
 ```
 
+如果你要在轉換前先驗證 OBJ 內容（例如必須包含 `floor` 與 `roof` 兩個 object/group 名稱），可加：
+
+```bash
+curl -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id=obj_demo \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F obj_file=@./your.obj \
+  -F required_objects=floor,roof \
+  -o obj_demo.usd
+```
+
+也可以跳過這個檢查（不建議，除非你的 OBJ 沒有 floor/roof 的命名慣例）：
+
+```bash
+curl -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id=obj_demo \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F obj_file=@./your.obj \
+  -F skip_obj_validation=1 \
+  -o obj_demo.usd
+```
+
 > 注意：上傳檔案一定要用 `@`（例如 `-F obj_file=@./your.obj`），否則後端會回 `No obj_file part`。
+
+> 小提醒：如果你用 `-sS`（silent）加上 `-o out.usd`（寫檔），終端機本來就不會顯示任何回應內容；
+> 若後端回 `400` JSON 錯誤訊息，也會被寫進 `.usd` 檔案。
+> 建議加 `-f`（400/500 直接視為失敗）或加 `-w 'http=%{http_code}\n'` 印出狀態碼。
 
 ### 列出已產生的 GML（`/list_files`）
 
@@ -204,6 +232,12 @@ multipart/form-data：
 - `epsg_usd`（選填，預設 `32654`）
 - `disable_interiors`（選填，`1/true/yes` 會加上 `--disable_interiors`）
 - `script_name`（選填，指定 `/opt/aodt_ui_gis/` 的轉換腳本；預設 `citygml2aodt_indoor_groundplane_domain.py`）
+- `required_objects`（選填，逗號分隔，例如 `floor,roof`；用來在轉換前驗證 OBJ 必須包含這些 object/group 名稱）
+- `required_object`（選填，可重複多次；效果同 `required_objects`）
+- `skip_obj_validation`（選填，`1/true/yes` 會跳過 OBJ 名稱檢查）
+
+> 預設情況下（不指定 `required_objects`/`required_object` 且不設 `skip_obj_validation`），服務會要求 OBJ 內必須存在 `floor` 與 `roof`。
+> 這通常來自 OBJ 中的物件/群組宣告行：`o floor`、`o roof`（或 `g floor`、`g roof`）。
 
 ### `GET /list_files`
 

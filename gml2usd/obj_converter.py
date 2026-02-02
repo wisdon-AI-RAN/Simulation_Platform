@@ -9,6 +9,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+class OBJValidationError(Exception):
+    def __init__(self, message: str, *, missing=None, present=None, required=None):
+        super().__init__(message)
+        self.missing = list(missing or [])
+        self.present = list(present or [])
+        self.required = list(required or [])
+
 class OBJToGMLConverter:
     def __init__(self):
         self.vertices = []  # (x, y, z)
@@ -34,13 +42,14 @@ class OBJToGMLConverter:
                         
                     parts = line.split()
                     
-                    if parts[0] == 'o':  # 对象名称
+                    if parts[0] in ('o', 'g'):  # 对象/群组名称
                         if current_object:
                             current_object['vertex_end'] = len(self.vertices)
                             self.objects.append(current_object)
                         
+                        obj_name = parts[1] if len(parts) > 1 else 'UnnamedObject'
                         current_object = {
-                            'name': parts[1],
+                            'name': obj_name,
                             'vertex_start': len(self.vertices),
                             'faces': []
                         }
@@ -213,3 +222,32 @@ class OBJToGMLConverter:
         except Exception as e:
             logger.error(f"Process Error: {e}")
             raise
+
+
+def validate_obj_required_objects(obj_path: str, required_objects) -> None:
+    """Validate that an OBJ contains required object/group names.
+
+    required_objects: iterable of names. Match is case-insensitive.
+    Raises OBJValidationError if missing.
+    """
+    required = [str(x).strip() for x in (required_objects or []) if str(x).strip()]
+    if not required:
+        return
+
+    conv = OBJToGMLConverter()
+    conv.parse_obj(obj_path)
+    present = {o.get('name', '') for o in conv.objects}
+    present_norm = {n.strip().lower() for n in present if isinstance(n, str)}
+
+    missing = [name for name in required if name.strip().lower() not in present_norm]
+    if missing:
+        hint = (
+            "OBJ 需用 'o <name>' 或 'g <name>' 宣告物件/群組名稱；"
+            "例如：o floor、o roof（或 g floor、g roof）。"
+        )
+        raise OBJValidationError(
+            f"Missing required objects/groups: {missing}. Present: {sorted(present)}. Hint: {hint}",
+            missing=missing,
+            present=sorted(present),
+            required=required,
+        )

@@ -11,7 +11,7 @@ import datetime
 import traceback
 import sys
 from local_citygml2usd import convert_citygml_to_usd, ConversionError
-from obj_converter import OBJToGMLConverter
+from obj_converter import OBJToGMLConverter, validate_obj_required_objects, OBJValidationError
 import requests
 
 # 创建日志目录
@@ -307,6 +307,7 @@ def process_obj():
         epsg_gml = request.form.get('epsg_gml', '3826') 
         epsg_usd = request.form.get('epsg_usd', '32654')
         disable_interiors = _parse_bool(request.form.get('disable_interiors', None), default=False)
+        skip_obj_validation = _parse_bool(request.form.get('skip_obj_validation', None), default=False)
         # Converter script inside /opt/aodt_ui_gis
         # Default: indoor + groundplane + domain pipeline.
         script_name = (
@@ -315,6 +316,19 @@ def process_obj():
         ).strip()
         output_format = (request.form.get('output', 'usd') or 'usd').strip().lower()
         keep_files = (request.form.get('keep_files', '0') or '0').strip() == '1'
+
+        # Optional validation: ensure OBJ contains specific object/group names.
+        # - required_objects: comma-separated list, e.g. "floor,roof"
+        # - required_object: repeatable field, e.g. -F required_object=floor -F required_object=roof
+        required_objects = []
+        required_objects_csv = request.form.get('required_objects')
+        if required_objects_csv:
+            required_objects.extend([x.strip() for x in required_objects_csv.split(',') if x.strip()])
+        required_objects.extend([x.strip() for x in request.form.getlist('required_object') if x.strip()])
+
+        # Default behavior: enforce common key elements unless user explicitly skips validation.
+        if not required_objects and not skip_obj_validation:
+            required_objects = ['floor', 'roof']
         
         if not lat_str or not lon_str:
              return jsonify({"status": "error", "message": "Missing lat or lon parameters"}), 400
@@ -346,6 +360,27 @@ def process_obj():
         
         logger.info(f"Saving uploaded OBJ to {obj_path}")
         file.save(obj_path)
+
+        # 3.5 Validate OBJ content before conversion
+        if not skip_obj_validation:
+            try:
+                validate_obj_required_objects(obj_path, required_objects)
+            except OBJValidationError as ve:
+                logger.warning(f"OBJ validation failed: {ve}")
+                if not keep_files:
+                    try:
+                        os.remove(obj_path)
+                    except Exception:
+                        pass
+                return jsonify({
+                    "status": "error",
+                    "message": "OBJ validation failed",
+                    "missing": getattr(ve, 'missing', []),
+                    "present": getattr(ve, 'present', []),
+                    "required": getattr(ve, 'required', required_objects),
+                    "hint": "請確認 OBJ 檔內有使用 'o <name>' 或 'g <name>' 宣告名稱，例如：o floor、o roof（或 g floor、g roof）。",
+                    "details": str(ve),
+                }), 400
         
         # 4. OBJ -> GML
         logger.info(f"Converting OBJ to GML with origin ({lat}, {lon}) -> EPSG:{epsg_gml}")

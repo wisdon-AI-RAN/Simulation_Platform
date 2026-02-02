@@ -101,8 +101,18 @@ docker compose up -d --build
 - `script_name`：指定容器內 `/opt/aodt_ui_gis/` 使用哪支轉換腳本（預設 `citygml2aodt_indoor_groundplane_domain.py`）
 - `output`：`usd`（預設）或 `gml`（只回傳中間產物 GML）
 - `keep_files`：`1` 表示保留暫存檔（預設會清除）
+- `required_objects`：逗號分隔（例如 `floor,roof`），用來在轉換前驗證 OBJ 必須包含這些 object/group 名稱
+- `required_object`：可重複多次（效果同 `required_objects`）
+- `skip_obj_validation`：`1/true/yes` 會跳過 OBJ 名稱檢查
+
+> 預設情況下（不指定 `required_objects`/`required_object` 且不設 `skip_obj_validation`），服務會要求 OBJ 內必須存在 `floor` 與 `roof`。
+> 這通常來自 OBJ 中的物件/群組宣告行：`o floor`、`o roof`（或 `g floor`、`g roof`）。
 
 > 注意：上傳檔案時 `curl` 需要用 `@`，例如 `-F obj_file=@./Askey.obj`，否則後端會收到字串而不是檔案。
+
+> 建議：呼叫 `curl` 時加 `-f` 或印出 HTTP code。
+> - 沒加 `-f` 時，即使後端回 `400`，`curl` 仍可能 exit code 0，且你若用 `-o xxx.usd` 會把錯誤 JSON 存成 `.usd`。
+> - 建議用：`curl -f -sS ... -o out.usd` 或 `curl -sS -w 'http=%{http_code}\n' -o out.usd ...`
 
 ## 資料夾與檔案輸出
 
