@@ -137,6 +137,14 @@ Request body（JSON）：
 
 > 註：bundle（`.usd` + glTF 資產組）的回傳方式是 API 的預設行為；目前不提供一個顯式的 `output=bundle` 參數。
 
+### 為什麼預設回傳 `.zip`？
+
+- HTTP 一次回應通常只能回傳「一個檔案」。而 bundle 其實包含至少兩種輸出：`.usd` 以及 glTF 資產組。
+- glTF（`.gltf`）多數情況不是單一檔案：通常會再依賴 `.bin`，有貼圖時還會有多張圖片；把它們打包成 zip 才能一次下載、檔案也不會缺。
+- 預設 bundle zip 可以確保「同一次轉換」產出的 USD 與 glTF 是一致的一組結果，對使用者/前端下載保存也最簡單。
+
+> 小提醒：`curl -o 檔名` 只是在你本機存檔的檔名，**不會**改變後端回傳的格式；要改回傳格式請用 `output` 參數。
+
 
 ### 基礎：OBJ ➜ bundle（統一檔名 + 必要物件驗證）
 #### 根據不同project可能會修改參數 : NAME , lat , lon 
@@ -160,6 +168,54 @@ curl -f -sS -X POST "$BASE_URL/process_obj" \
   -o "$NAME".zip
 ```
 
+### OBJ 只輸出 USD
+
+```bash
+NAME=Askey
+BASE_URL=http://localhost:8082
+
+curl -f -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id="$NAME" \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F epsg_gml=3826 \
+  -F epsg_usd=32654 \
+  -F disable_interiors=1 \
+  -F script_name=citygml2aodt_indoor_groundplane_domain.py \
+  -F obj_file=@./"$NAME".obj \
+  -F output_basename="$NAME" \
+  -F required_objects=floor,roof \
+  -F skip_obj_validation=0 \
+  -F output=usd \
+  -o "$NAME".usd
+```
+
+### OBJ 只輸出 glTF
+
+> 依你的需求（先忽略 `.bin`）：`output=gltf` 會回傳 **單一 `.gltf`**（服務端會把 `.bin/貼圖` 內嵌成 data URI）。
+> 若你真的需要「傳統多檔 glTF」下載（`.gltf` + `.bin` + textures），可改用 `output=gltf_zip`（回傳 zip）。
+
+```bash
+NAME=Askey
+BASE_URL=http://localhost:8082
+
+# glTF (single .gltf)
+curl -f -sS -X POST "$BASE_URL/process_obj" \
+  -F project_id="$NAME" \
+  -F lat=22.82539 \
+  -F lon=120.40568 \
+  -F epsg_gml=3826 \
+  -F epsg_usd=32654 \
+  -F disable_interiors=1 \
+  -F script_name=citygml2aodt_indoor_groundplane_domain.py \
+  -F obj_file=@./"$NAME".obj \
+  -F output_basename="$NAME" \
+  -F required_objects=floor,roof \
+  -F skip_obj_validation=0 \
+  -F output=gltf \
+  -o "$NAME".gltf
+```
+
 ### 基礎：經緯度 ➜ bundle（統一檔名）
 #### 根據不同project可能會修改參數 : NAME , lat , lon , margin
 
@@ -171,6 +227,25 @@ curl -f -sS -X POST "$BASE_URL/process_gml" \
   -H 'Content-Type: application/json' \
   -d '{"project_id":"'"$NAME"'","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","gml_name":"'"$NAME"'.gml"}' \
   -o "$NAME".zip
+```
+
+### 經緯度只輸出 USD / glTF
+
+```bash
+NAME=Askey
+BASE_URL=http://localhost:8082
+
+# USD
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"'"$NAME"'","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"output":"usd","gml_name":"'"$NAME"'.gml"}' \
+  -o "$NAME".usd
+
+# glTF (single .gltf)
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"'"$NAME"'","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654","disable_interiors":false,"output":"gltf","gml_name":"'"$NAME"'.gml"}' \
+  -o "$NAME".gltf
 ```
 
 ### API狀態檢查
@@ -282,11 +357,12 @@ multipart/form-data：
 
 - `obj_file`（必填）
 - `lat`、`lon`（必填，WGS84，作為模型原點）
-- `output`（選填：`usd` / `gml` / `glb` / `gltf`）
+- `output`（選填：`usd` / `gml` / `gltf` / `gltf_zip` / `glb`）
   - 不指定（預設）：回傳 bundle zip（`.usd` + glTF 資產組）
   - `usd`：只回傳 `.usd`
   - `gml`：只回傳中間產物 `.gml`
-  - `gltf`：回傳 glTF zip（`.gltf` + `.bin`，若有貼圖也會一起打包）
+  - `gltf`：回傳單一 `.gltf`（服務端會把 `.bin/貼圖` 內嵌成 data URI）
+  - `gltf_zip`：回傳傳統 glTF zip（`.gltf` + `.bin`，若有貼圖也會一起打包）
   - `glb`：回傳單一 `.glb`
 - `keep_files`（選填：`1` 保留暫存檔；預設會清掉）
 - `epsg_gml`（選填，預設 `3826`）

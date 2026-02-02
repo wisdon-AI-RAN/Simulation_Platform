@@ -12,7 +12,7 @@ import traceback
 import sys
 from local_citygml2usd import convert_citygml_to_usd, ConversionError
 from obj_converter import OBJToGMLConverter, validate_obj_required_objects, OBJValidationError
-from usd_to_gltf import usd_to_glb, usd_to_gltf_zip, usd_to_gltf_dir
+from usd_to_gltf import usd_to_glb, usd_to_gltf_zip, usd_to_gltf_dir, usd_to_gltf_single_file
 import requests
 import re
 
@@ -271,7 +271,7 @@ def process_gml():
                 os.remove(gml_path)
             return send_file(return_data, mimetype='application/zip', download_name=os.path.basename(bundle_zip_path))
 
-        if output_format in {'glb', 'gltf'}:
+        if output_format in {'glb', 'gltf', 'gltf_zip'}:
             gltf_out_dir = os.path.join(working_dir, "processed_gltfs")
             os.makedirs(gltf_out_dir, exist_ok=True)
 
@@ -287,6 +287,19 @@ def process_gml():
                     os.remove(usd_path)
                     os.remove(gml_path)
                 return send_file(return_data, mimetype='model/gltf-binary', download_name=os.path.basename(glb_path))
+
+            if output_format == 'gltf':
+                gltf_path = os.path.join(gltf_out_dir, os.path.splitext(usd_name)[0] + ".gltf")
+                usd_to_gltf_single_file(usd_path, gltf_path, base_name=os.path.splitext(usd_name)[0])
+                return_data = io.BytesIO()
+                with open(gltf_path, 'rb') as fo:
+                    return_data.write(fo.read())
+                return_data.seek(0)
+                os.remove(gltf_path)
+                if not keep_files:
+                    os.remove(usd_path)
+                    os.remove(gml_path)
+                return send_file(return_data, mimetype='model/gltf+json', download_name=os.path.basename(gltf_path))
 
             zip_path = os.path.join(gltf_out_dir, os.path.splitext(usd_name)[0] + "_gltf.zip")
             usd_to_gltf_zip(usd_path, zip_path, base_name=os.path.splitext(usd_name)[0])
@@ -522,7 +535,7 @@ def process_obj():
                 return send_file(return_data, mimetype='application/zip', download_name=f"{response_base}.zip")
 
             # Optional: USD -> GLB / glTF
-            if output_format in {'glb', 'gltf'}:
+            if output_format in {'glb', 'gltf', 'gltf_zip'}:
                 gltf_out_dir = os.path.join(working_dir, "processed_gltfs")
                 os.makedirs(gltf_out_dir, exist_ok=True)
 
@@ -543,6 +556,24 @@ def process_obj():
                             logger.warning(f"Cleanup failed: {e}")
 
                     return send_file(return_data, mimetype='model/gltf-binary', download_name=f"{response_base}.glb")
+
+                if output_format == 'gltf':
+                    gltf_path = os.path.join(gltf_out_dir, f"{response_base}_{int(time.time())}.gltf")
+                    usd_to_gltf_single_file(usd_path, gltf_path, base_name=response_base)
+                    with open(gltf_path, 'rb') as fo:
+                        return_data.write(fo.read())
+                    return_data.seek(0)
+
+                    if not keep_files:
+                        try:
+                            os.remove(obj_path)
+                            os.remove(gml_path)
+                            os.remove(usd_path)
+                            os.remove(gltf_path)
+                        except Exception as e:
+                            logger.warning(f"Cleanup failed: {e}")
+
+                    return send_file(return_data, mimetype='model/gltf+json', download_name=f"{response_base}.gltf")
 
                 zip_path = os.path.join(gltf_out_dir, f"{response_base}_gltf_{int(time.time())}.zip")
                 usd_to_gltf_zip(usd_path, zip_path, base_name=response_base)

@@ -21,6 +21,8 @@ from pathlib import Path
 import json
 import shutil
 import time
+import base64
+import mimetypes
 
 from pxr import Usd
 from usd2gltf import converter
@@ -228,3 +230,92 @@ def usd_to_gltf_zip(
         pass
 
     return str(output_zip_path)
+
+
+def _data_uri_for_file(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(str(path))
+    if not mime:
+        # Fallbacks
+        if path.suffix.lower() == ".bin":
+            mime = "application/octet-stream"
+        else:
+            mime = "application/octet-stream"
+    raw = path.read_bytes()
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def usd_to_gltf_single_file(
+    input_usd: str,
+    output_gltf: str,
+    *,
+    base_name: str | None = None,
+    remove_prim_paths: list[str] | None = None,
+) -> str:
+    """Convert USD -> a single-file .gltf by embedding external assets as data URIs.
+
+    This produces a standalone .gltf that does not require a separate .bin file.
+    Returns the output .gltf path.
+    """
+    input_path = Path(input_usd)
+    output_path = Path(output_gltf)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    name = base_name or input_path.stem
+    tmp_dir = output_path.parent / f"{name}_gltf_single_{int(time.time() * 1000)}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    generated_files: list[str] = []
+    try:
+        generated_files = usd_to_gltf_dir(
+            str(input_path),
+            str(tmp_dir),
+            base_name=name,
+            remove_prim_paths=remove_prim_paths,
+        )
+
+        gltf_path = tmp_dir / f"{name}.gltf"
+        if not gltf_path.exists():
+            raise RuntimeError(f"Expected .gltf not generated: {gltf_path}")
+
+        data = json.loads(gltf_path.read_text(encoding="utf-8"))
+
+        # Embed buffers (.bin)
+        buffers = data.get("buffers")
+        if isinstance(buffers, list):
+            for buf in buffers:
+                if not isinstance(buf, dict):
+                    continue
+                uri = buf.get("uri")
+                if not isinstance(uri, str) or uri.startswith("data:"):
+                    continue
+                ref = tmp_dir / uri
+                if ref.exists() and ref.is_file():
+                    buf["uri"] = _data_uri_for_file(ref)
+
+        # Embed images (textures) if present
+        images = data.get("images")
+        if isinstance(images, list):
+            for img in images:
+                if not isinstance(img, dict):
+                    continue
+                uri = img.get("uri")
+                if not isinstance(uri, str) or uri.startswith("data:"):
+                    continue
+                ref = tmp_dir / uri
+                if ref.exists() and ref.is_file():
+                    img["uri"] = _data_uri_for_file(ref)
+
+        output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(output_path)
+    finally:
+        # Best-effort cleanup
+        try:
+            for fp in generated_files:
+                Path(fp).unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            tmp_dir.rmdir()
+        except Exception:
+            pass
