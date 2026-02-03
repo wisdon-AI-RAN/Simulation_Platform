@@ -8,23 +8,7 @@ services:
     volumes:
       - ./Simulation_Agent/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - aodt-agent
       - gml2usd
-
-  aodt-agent:
-    build:
-      context: ./AODT-Agent
-      dockerfile: Dockerfile
-    container_name: aodt-agent
-    restart: unless-stopped
-    env_file:
-      - ./AODT-Agent/.env
-    volumes:
-      - ./AODT-Agent/.env:/app/.env:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    expose:
-      - "5000"
 
   gml2usd:
     build:

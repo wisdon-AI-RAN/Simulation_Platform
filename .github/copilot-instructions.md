@@ -1,34 +1,102 @@
 # Copilot instructions (Simulation Platform)
 
-## Big picture
-- This repo is a **2-service stack**:
-  - `AODT-Agent/`: Flask API for remote AODT restart via SSH (`POST /restart`) and smoke test (`GET /test`).
-  - `gml2usd/`: Flask API that generates CityGML and converts **GML/OBJ ➜ USD**, returning **USD as binary**.
-- In **single-port mode**, Nginx routes paths to the right service (see `AODT-Agent/gateway/nginx.conf`).
+## Build / run commands (Docker)
+### Single-port deployment (recommended)
+```bash
+# from repo root
+cp gml2usd/.env.example gml2usd/.env
+# optional: pin public port
+cp .env.example .env
 
-## How to run (Docker)
-- Preferred: single public port via gateway:
-  - Prepare env files: `AODT-Agent/.env` and `gml2usd/.env` (examples: `AODT-Agent/.env.example`, `gml2usd/.env.example`).
-  - Start from `AODT-Agent/`: `docker compose -f docker-compose.single-port.yml up -d --build`.
-- AODT-Agent only: `docker compose up -d --build` in `AODT-Agent/` (port via `AODT_AGENT_PUBLIC_PORT`).
+docker compose up -d --build
+```
 
-## Service boundaries & data flow
-- `gml2usd/gml_api_ssh.py` is the API entrypoint (gunicorn in `gml2usd/Dockerfile`).
-  - `/process_gml` runs `python3 Main.py` **non-interactively** by feeding stdin (Main.py is interactive), then calls `local_citygml2usd.convert_citygml_to_usd()`.
-  - `convert_citygml_to_usd()` shells out to scripts under `/opt/aodt_ui_gis/` (mounted via Dockerfile `PYTHONPATH=/opt/aodt_gis_python:/opt/aodt_ui_gis`).
-  - Endpoints return `send_file(BytesIO(...), mimetype='application/octet-stream')` and usually **delete temp files** afterwards.
-- `AODT-Agent/controllers/restart_aodt.py` calls `utils/ssh_utils.execute_remote_script()` (Paramiko) using env vars.
+Useful ops:
+```bash
+docker compose ps
+docker compose logs -f gateway
+docker compose logs -f gml2usd
+```
 
-## Project-specific conventions (important)
-- If you add a new API route in single-port deployments, update **both**:
-  - the Flask app (AODT-Agent or gml2usd)
-  - the gateway routing in `AODT-Agent/gateway/nginx.conf`
-- gml2usd is heavy/long-running:
-  - Nginx timeouts/body size are tuned in `AODT-Agent/gateway/nginx.conf`.
-  - gunicorn timeout is set in `gml2usd/Dockerfile`.
-- Treat `gml2usd/local_pydeps/` and `gml2usd/aodt_ui_gis/` as **prebuilt/third-party** assets; avoid refactors there unless a change is required to fix integration.
+### Run gml2usd without gateway
+```bash
+cd gml2usd
+docker build -t gml2usd:local .
+mkdir -p gml_original_file processed_gmls processed_usds uploads logs
 
-## Quick API probes
-- Gateway (single-port): `GET /health`, `GET /test`.
-- Restart: `POST /restart` (requires valid SSH env in `AODT-Agent/.env`).
-- Convert GML: `POST /to_usd` (multipart: `project_id`, `epsg_in`, `gml_file`, optional `epsg_out`).
+docker run --rm -p 5001:5001 \
+  -v "$PWD/.env:/app/.env:ro" \
+  -v "$PWD/gml_original_file:/app/gml_original_file:ro" \
+  -v "$PWD/processed_gmls:/app/processed_gmls" \
+  -v "$PWD/processed_usds:/app/processed_usds" \
+  -v "$PWD/uploads:/app/uploads" \
+  -v "$PWD/logs:/app/logs" \
+  gml2usd:local
+```
+
+## High-level architecture
+- **docker-compose** (default) runs two services:
+  - `gateway` (nginx) exposes a single public port and reverse-proxies to `gml2usd:5001`.
+  - `gml2usd` (Flask + gunicorn) does the heavy conversion work.
+- **Gateway routing** lives in `Simulation_Agent/gateway/nginx.conf`:
+  - `/health`, `/process_gml`, `/process_obj`, `/list_files` -> `gml2usd` upstream.
+- **API entrypoint** is `gml2usd/gml_api_ssh.py` (started by gunicorn; see `gml2usd/Dockerfile`).
+  - `POST /process_gml`:
+    1) runs `python3 Main.py` by feeding stdin (Main.py is interactive) to generate `processed_gmls/<gml_name>`
+    2) calls `local_citygml2usd.convert_citygml_to_usd()` which shells out to `python3 /opt/aodt_ui_gis/<script_name> ...` to generate USD
+    3) returns **binary** output (default: bundle zip containing `.usd` + generated glTF assets)
+  - `POST /process_obj`:
+    1) saves upload to `uploads/`
+    2) (optionally) validates OBJ has required object/group names
+    3) converts OBJ -> CityGML via `obj_converter.py` (uses `pyproj` to place model at provided lat/lon)
+    4) converts GML -> USD via the same `local_citygml2usd` pipeline
+    5) returns **binary** output
+- The converter scripts + native deps are shipped into the container under:
+  - `/opt/aodt_ui_gis/` (scripts)
+  - `/opt/aodt_gis_python/` + `/opt/aodt_gis_lib/` (prebuilt python/native libraries)
+
+`AODT-Agent` has been split out as a separate service/repo and is not part of the default compose.
+
+For same-machine development, you can optionally start it via `docker-compose.dev.yml`:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+## Key conventions (repo-specific)
+- **Route changes must be reflected in two places** for single-port deployments:
+  - Flask routes in `gml2usd/gml_api_ssh.py`
+  - Nginx routes in `Simulation_Agent/gateway/nginx.conf`
+- **Long-running conversions are expected**:
+  - gunicorn uses `--timeout 600` (see `gml2usd/Dockerfile`)
+  - nginx proxy timeouts/body size are tuned in `Simulation_Agent/gateway/nginx.conf`
+- **Treat as vendored assets** (avoid refactors unless integration is broken):
+  - `gml2usd/local_pydeps/`
+  - `gml2usd/aodt_ui_gis/`
+- **Output behavior (important for clients):**
+  - default response for `/process_gml` and `/process_obj` is a **bundle zip** (`.usd` + glTF assets)
+  - `output` can request: `usd`, `gml` (OBJ pipeline only), `gltf` (single-file), `gltf_zip`, `glb`
+  - `keep_files` controls whether server-side temps under `processed_gmls/`, `processed_usds/` are deleted after responding
+- **OBJ validation defaults** (in `/process_obj`): if the caller doesn’t specify `required_objects`/`required_object` and doesn’t set `skip_obj_validation=1`, the service requires `floor` and `roof` object/group names.
+- **Large datasets / volumes**:
+  - `gml2usd/gml_original_file/` is expected to be mounted read-only and can be very large
+  - `processed_gmls/`, `processed_usds/`, `uploads/`, `logs/` are runtime outputs and are usually volume-mounted
+
+## Quick API smoke checks
+```bash
+# Single-port gateway (default)
+BASE_URL=http://localhost:8082
+curl -sS "$BASE_URL/health" | cat
+
+# /process_gml (default returns zip; use -o to write binary)
+curl -f -sS -X POST "$BASE_URL/process_gml" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"demo","lat":22.82539,"lon":120.40568,"margin":50,"epsg_in":"3826","epsg_out":"32654"}' \
+  -o demo.zip
+
+# /process_obj (default returns zip)
+# curl -f -sS -X POST "$BASE_URL/process_obj" \
+#   -F project_id=demo -F lat=22.82539 -F lon=120.40568 \
+#   -F epsg_gml=3826 -F epsg_usd=32654 \
+#   -F obj_file=@./your.obj \
+#   -o demo.zip
+```

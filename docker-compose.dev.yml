@@ -1,0 +1,22 @@
+# Optional dev-only services for local development.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# Assumes you cloned the AODT-Agent repo as a sibling folder:
+#   ../AODT-Agent
+#
+services:
+  aodt-agent:
+    build:
+      context: ../AODT-Agent
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ../AODT-Agent/.env
+    volumes:
+      - ../AODT-Agent:/app
+      - ../AODT-Agent/.env:/app/.env:ro
+    expose:
+      - "5000"

@@ -18,17 +18,16 @@ gml2usd 提供兩種常用轉換流程：
 
 ## 推薦啟動方式（單一 Port Gateway）
 
-如果你要「部署給使用者」並且只想對外開一個 Port，請直接用本 repo 的單一 Port 模式（Nginx gateway 會轉發路由）：
+如果你要「部署給使用者」並且只想對外開一個 Port，請使用本平台根目錄的 Gateway（Nginx 會轉發路由）：
 
 1. 準備環境變數
 
-- 複製並調整 [../AODT-Agent/.env.example](../AODT-Agent/.env.example) ➜ `../AODT-Agent/.env`
 - 複製並調整 [.env.example](.env.example) ➜ `.env`
 
-2. 啟動（在 `AODT-Agent/` 目錄下）
+2. 啟動（在平台根目錄 `Simulation_platform/`）
 
 ```bash
-docker compose -f docker-compose.single-port.yml up -d --build
+docker compose up -d --build
 ```
 
 Gateway 會提供：`/health`、`/process_gml`、`/process_obj`、`/list_files`。
@@ -377,5 +376,5 @@ multipart/form-data：
 
 ## Notes / Troubleshooting
 
-- 轉換工作可能很久：單一 Port 模式已在 [../AODT-Agent/gateway/nginx.conf](../AODT-Agent/gateway/nginx.conf) 放寬 `client_max_body_size` 與 timeout。
+- 轉換工作可能很久：單一 Port 模式已在 [../Simulation_Agent/gateway/nginx.conf](../Simulation_Agent/gateway/nginx.conf) 放寬 `client_max_body_size` 與 timeout。
 - gml2usd 使用 `local_pydeps/` 的 prebuilt 套件與 shared libs（見 [Dockerfile](Dockerfile) 的 `PYTHONPATH` / `LD_LIBRARY_PATH`），建議用 Docker 方式部署。
